@@ -1,90 +1,120 @@
 import os
 import joblib
-from sklearn.model_selection import StratifiedShuffleSplit,cross_val_score
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import StratifiedShuffleSplit, cross_val_score
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
-import pandas as pd
-import numpy as np
 from sklearn.linear_model import LinearRegression
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import root_mean_squared_error
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
-MODEL_FILE="model.pkl"
-PIPELINE_FILE="pipeline.pkl"
+MODEL_FILE = "model.pkl"
+PIPELINE_FILE = "pipeline.pkl"
 
-def build_pipeline(num_column,cat_column):
-
-    #for numerical columns
-    num_pipeline=Pipeline([
-        ("Imputer",SimpleImputer(strategy="median")),
-        ("Scler",StandardScaler())
+def build_pipeline(num_column, cat_column):
+    """Build preprocessing pipeline for numeric and categorical columns."""
+    num_pipeline = Pipeline([
+        ("Imputer", SimpleImputer(strategy="median")),
+        ("Scaler", StandardScaler())
     ])
 
-    #for categorical columns
-
-    cat_pipeline=Pipeline([
-        ("OneHot",OneHotEncoder(handle_unknown="ignore"))
+    cat_pipeline = Pipeline([
+        ("OneHot", OneHotEncoder(handle_unknown="ignore"))
     ])
 
-    # Construct The Full Pipeline
-
-    full_pipeline=ColumnTransformer([
-        ("Num",num_pipeline,num_column),
-        ("Cat",cat_pipeline,cat_column)
+    full_pipeline = ColumnTransformer([
+        ("Num", num_pipeline, num_column),
+        ("Cat", cat_pipeline, cat_column)
     ])
-
     return full_pipeline
 
+
 if not os.path.exists(MODEL_FILE):
-    #Let's Train The Model  
-    # 1. Load The Dataset
+    # 1️⃣ Load dataset
+    housing = pd.read_csv("housing.csv")
 
-    housing= pd.read_csv("housing.csv")
+    # 2️⃣ Stratified split based on income category
+    housing['income_cat'] = pd.cut(
+        housing["median_income"],
+        bins=[0.0, 1.5, 3.0, 4.5, 6.0, np.inf],
+        labels=[1, 2, 3, 4, 5]
+    )
 
-    # 2. Create a stratified test set
+    split = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+    for train_index, test_index in split.split(housing, housing['income_cat']):
+        housing.loc[test_index].drop("income_cat", axis=1).to_csv("input.csv", index=False)
+        housing = housing.loc[train_index].drop("income_cat", axis=1)
 
-    housing['income_cat']= pd.cut(housing["median_income"],
-                                bins=[0.0,1.5,3.0,4.5,6.0,np.inf],
-                                labels=[1,2,3,4,5])
+    housing_labels = housing['median_house_value'].copy()
+    housing_features = housing.drop("median_house_value", axis=1)
 
-    split=StratifiedShuffleSplit(n_splits=1,test_size=0.2,random_state=42)
+    num_column = housing_features.drop("ocean_proximity", axis=1).columns.tolist()
+    cat_column = ["ocean_proximity"]
 
-    for train_index,test_index in split.split(housing,housing['income_cat']):
-        housing.loc[test_index].drop("income_cat",axis=1).to_csv("input.csv",index=False)
-        housing=housing.loc[train_index].drop("income_cat",axis=1)
-        
-    
-    housing_labels=housing['median_house_value'].copy()
-    housing_features=housing.drop("median_house_value",axis=1)
+    # 3️⃣ Build and apply pipeline
+    pipeline = build_pipeline(num_column, cat_column)
+    housing_prepared = pipeline.fit_transform(housing_features)
 
-    num_column=housing_features.drop("ocean_proximity",axis=1).columns.tolist() 
-    cat_column=["ocean_proximity"]
+    # 4️⃣ Train model
+    model = RandomForestRegressor(random_state=42)
+    model.fit(housing_prepared, housing_labels)
 
-    pipeline=build_pipeline(num_column,cat_column)
-    housing_prepared=pipeline.fit_transform(housing_features)
-    
-    model=RandomForestRegressor(random_state=42)
-    model.fit(housing_prepared,housing_labels)
+    # 5️⃣ Cross-validation performance
+    scores = cross_val_score(model, housing_prepared, housing_labels,
+                             scoring="neg_mean_squared_error", cv=5)
+    rmse_scores = np.sqrt(-scores)
+    print("\n📊 Cross-validation results:")
+    print(f"Mean RMSE: {rmse_scores.mean():.2f}")
+    print(f"Standard Deviation: {rmse_scores.std():.2f}")
 
-    joblib.dump(model,MODEL_FILE)
-    joblib.dump(pipeline,PIPELINE_FILE)
+    # 6️⃣ Save model and pipeline
+    joblib.dump(model, MODEL_FILE)
+    joblib.dump(pipeline, PIPELINE_FILE)
+    print("\n✅ Model trained and saved successfully!")
 
-    print("Model is Trained Congrats!")
+    # 7️⃣ Visualizations
+    plt.figure(figsize=(6, 4))
+    sns.histplot(rmse_scores, kde=True, color="orange")
+    plt.title("Cross-Validation RMSE Distribution")
+    plt.xlabel("RMSE")
+    plt.ylabel("Frequency")
+    plt.show()
+
+    # 8️⃣ Feature correlation heatmap
+    corr_matrix = housing.corr(numeric_only=True)
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(corr_matrix, annot=False, cmap="coolwarm")
+    plt.title("Feature Correlation Heatmap")
+    plt.show()
 
 else:
-    # Let's Do Inference
-
+    # 🔍 Inference Section
     model = joblib.load(MODEL_FILE)
     pipeline = joblib.load(PIPELINE_FILE)
-    
-    input_data=pd.read_csv("input.csv")
-    transformed_data=pipeline.transform(input_data)
+
+    input_data = pd.read_csv("input.csv")
+    transformed_data = pipeline.transform(input_data)
     predictions = model.predict(transformed_data)
     input_data["median_house_value"] = predictions
- 
+
+    # Save predictions
     input_data.to_csv("output.csv", index=False)
-    print("Inference complete. Results saved to output.csv")
-    
+    print("\n📁 Inference complete. Results saved to output.csv")
+
+    # Evaluation metrics if ground truth exists
+    if "median_house_value" in input_data.columns:
+        true_values = input_data["median_house_value"]
+        rmse = np.sqrt(mean_squared_error(true_values, predictions))
+        mae = mean_absolute_error(true_values, predictions)
+        r2 = r2_score(true_values, predictions)
+
+        print("\n📈 Model Evaluation Metrics:")
+        print(f"RMSE: {rmse:.2f}")
+        print(f"MAE: {mae:.2f}")
+        print(f"R²: {r2:.2f}")
